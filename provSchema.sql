@@ -1,7 +1,17 @@
 
+-- note that DATETIME in some tables is unacceptable, this was done for simplicity. -- It needs to be switched to TIMESTAMP.
+
 CREATE TABLE prv_ProcHistory (
-    -- This table produces unique procHistoryIds
+    -- This table produces unique procHistoryIds. The id changes each time something
+    -- changes in the provenance. It is not linked to any other table. Because it
+    -- is recording the time, it can serve as a "snapshot". E.g., based on the
+    -- time we can find out which configuration were valid at that time, what was
+    -- executed at that time etc. It also serves as a "flag" that something has
+    -- changed.
     procHistoryId BIGINT NOT NULL AUTO_INCREMENT,
+    theTime TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   -- time when this procHistory id was created
+    description TEXT,          -- description what has changed
     PRIMARY KEY PK_prvProcHistory_procHistoryId (procHistoryId)
 ) ENGINE=InnoDB;
 
@@ -50,28 +60,6 @@ CREATE TABLE prv_cnf_Pipeline_Tasks (
         REFERENCES prv_cnf_Pipeline(pipelineCnfId)
 ) ENGINE=InnoDB;
 
-CREATE TABLE prv_TableToPipeline (
-    -- This table defines which tables are produced by which pipeline
-    tableToPipelineId INT NOT NULL AUTO_INCREMENT,
-    tableName VARCHAR(64),
-    pipelineId INT,
-    PRIMARY KEY PK_t2p_id(tableToPipelineId),
-    INDEX IDX_t2p_pId(pipelineId),
-    CONSTRAINT FK_t2p_pId
-        FOREIGN KEY(pipelineId)
-        REFERENCES prv_Pipeline(pipelineId)
-) ENGINE=InnoDB;
-
-CREATE TABLE prv_cnf_TableToPipeline (
-    tableToPipelineId INT,
-    validityBegin DATETIME NOT NULL,
-    validityEnd DATETIME NOT NULL,
-    INDEX IDX_cnft2p_t2pId(tableToPipelineId),
-    CONSTRAINT FK_cnft2p_t2pId
-        FOREIGN KEY(tableToPipelineId)
-        REFERENCES prv_TableToPipeline(tableToPipelineId)
-) ENGINE=InnoDB;
-
 CREATE TABLE prv_cnf_Task (
     taskCnfId INT NOT NULL AUTO_INCREMENT,
     taskId INT,
@@ -88,8 +76,32 @@ CREATE TABLE prv_cnf_Task (
         REFERENCES prv_Task(taskId)
 ) ENGINE=InnoDB;
 
+CREATE TABLE prv_cnf_Task_Columns (
+    -- This table defines which tables+columns are altered by a given task.
+    -- One row per table+column.
+    taskCnfId INT,
+    tcName TEXT, -- table and column pair. Format: "table.column".
+                 -- "table.*" is allowed to indicate all columns in a table
+    INDEX IDX_cnfTaskColumns_taskCnfId(taskCnfId),
+    CONSTRAINT FK_cnfTaskCols_taskCnfId
+        FOREIGN KEY(taskCnfId)
+        REFERENCES prv_cnf_Task(taskCnfId)
+) ENGINE=InnoDB;
+
+CREATE TABLE prv_cnf_Task_Files (
+    -- This table defines which files are altered by a given task.
+    -- One row per file. This table can be trivially extended should we capture
+    -- which sections of files are altered.
+    taskCnfId INT,
+    fileUrl TEXT, -- url that uniquely locates the file
+    INDEX IDX_cnfTaskFiles_taskCnfId(taskCnfId),
+    CONSTRAINT FK_cnfTaskFiles_taskCnfId
+        FOREIGN KEY(taskCnfId)
+        REFERENCES prv_cnf_Task(taskCnfId)
+) ENGINE=InnoDB;
+
 CREATE TABLE prv_cnf_Task_KVParams (
-    -- This table keeps parameter values for tasks. One row per param. For now
+    -- This table keeps parameter values for tasks. One row per parameter. For now
     -- everything is kept as strings (not efficient)
     taskCnfId INT,
     theKey VARCHAR(255),
@@ -122,25 +134,25 @@ CREATE TABLE prv_cnf_Node (
         REFERENCES prv_Node(nodeId)
 ) ENGINE=InnoDB;
 
-CREATE TABLE prv_SCEGroup (
-    -- This table defines groups of ScienceCalibratedExposures that are processed
-    -- together using the same configuration.
-    sceGroupId BIGINT NOT NULL AUTO_INCREMENT,
-    PRIMARY KEY PK_sceGroup_sceGroupId(sceGroupId)
+CREATE TABLE prv_DataBlock (
+    -- This table defines blocks of data. A block of data is a group of ids from the
+    -- same table that are processed together using the same configuration.
+    blockId BIGINT NOT NULL AUTO_INCREMENT,
+    tableName VARCHAR(64) NOT NULL,
+    PRIMARY KEY PK_dataBlock_blockd(blockId)
 ) ENGINE=InnoDB;
 
-CREATE TABLE prv_SCEExposureToGroup (
-    -- This table defines which exposures belong to a given group.
-    scExposureId BIGINT NOT NULL,
-    sceGroupId BIGINT NOT NULL,
-    INDEX IDX_sceExpToGroup_expId(scExposureId),
-    INDEX IDX_sceExpToGroup_sceGroupId(sceGroupId),
-    CONSTRAINT FK_sce_scExposure
-        FOREIGN KEY(scExposureId)
-        REFERENCES ScienceCalibratedExposure(scExposureId),
-    CONSTRAINT FK_sceExpToGroup_sceGroupId
-        FOREIGN KEY(sceGroupId)
-        REFERENCES prv_SCEGroup(sceGroupId)
+CREATE TABLE prv_RowIdToDataBlock (
+    -- This table defines which rows belong to a given data block.
+    theId BIGINT NOT NULL, -- the id of one data element. Note that we are not
+                           -- enforcing strict foreign key constraint because this
+                           -- will point to different tables.
+    blockId BIGINT NOT NULL,
+    INDEX IDX_rowIdToDataBlock_theId(theId),
+    INDEX IDX_rowIdToDataBlock_blockId(blockId),
+    CONSTRAINT FK_rowIdTodataBlock_blockId
+        FOREIGN KEY(blockId)
+        REFERENCES prv_DataBlock(blockId)
 ) ENGINE=InnoDB;
 
 CREATE TABLE prv_TaskExecution (
@@ -164,18 +176,34 @@ CREATE TABLE prv_TaskExecution (
         REFERENCES prv_Node(nodeId)
 ) ENGINE=InnoDB;
 
-CREATE TABLE prv_TaskExecutionToSCEGroup (
-    -- This table maps tasks executions to SCEGroups. Each group is typically
-    -- processed by multiple task executions, and each task execution may process
-    -- multiple groups, so it is many-to-many.
+CREATE TABLE prv_TaskExecutionToInputDataBlock (
+    -- This table maps tasks executions to input DataBlocks. Each block is
+    -- typically processed by multiple task executions, and each task execution
+    -- may process multiple data blocks, so it is many-to-many.
     taskExecId BIGINT NOT NULL,
-    sceGroupId BIGINT NOT NULL,
-    INDEX IDX_te2sceGroup_taskExecId(taskExecId),
-    INDEX IDX_ta2sceGroup_sceGroupId(sceGroupId),
-    CONSTRAINT FK_te2sceGroup_taskExecId
+    blockId BIGINT,  -- block of input data or NULL
+    INDEX IDX_te2IDB_taskExecId(taskExecId),
+    INDEX IDX_ta2IDB_blockIdId(blockId),
+    CONSTRAINT FK_te2IDB_taskExecId
         FOREIGN KEY(taskExecId)
         REFERENCES prv_TaskExecution(taskExecId),
-    CONSTRAINT FK_te2sceGroup_sceGroupId
-        FOREIGN KEY(sceGroupId)
-        REFERENCES prv_SCEGroup(sceGroupId)
+    CONSTRAINT FK_te2IDB_blockId
+        FOREIGN KEY(blockId)
+        REFERENCES prv_DataBlock(blockId)
+) ENGINE=InnoDB;
+
+CREATE TABLE prv_TaskExecutionToOutputDataBlock (
+    -- This table maps tasks executions to output DataBlocks. Note that each task
+    -- execution may output multiple data blocks. There is one entry here for each
+    -- task execution - output block pair.
+    taskExecId BIGINT NOT NULL,
+    blockId BIGINT,  -- block of input data or NULL
+    INDEX IDX_te2ODB_taskExecId(taskExecId),
+    INDEX IDX_ta2ODB_blockId(blockId),
+    CONSTRAINT FK_te2ODB_taskExecId
+        FOREIGN KEY(taskExecId)
+        REFERENCES prv_TaskExecution(taskExecId),
+    CONSTRAINT FK_te2ODB_blockId
+        FOREIGN KEY(blockId)
+        REFERENCES prv_DataBlock(blockId)
 ) ENGINE=InnoDB;

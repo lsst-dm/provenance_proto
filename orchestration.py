@@ -16,7 +16,7 @@ class Orchestration(object):
 
     After processing the first 70 exposures, it changes one algorithm for one task.
     """
-    def __init__(self, host, port, user, password, db):
+    def __init__(self, pp, host, port, user, password, db):
         """
         Connect to the Prototype database using provided credentials.
         Note, the database should exist and schema should be loaded.
@@ -26,16 +26,23 @@ class Orchestration(object):
         to group A, and the other half to group B.
 
         Initialize variables used for managing group of exposures
+
+        @param pp    Provenance prototype object
+        @host        mysql credentials: host
+        @port        mysql credentials: port
+        @user        mysql credentials: user
+        @password    mysql credentials: password
+        @db          mysql credentials: database name
         """
+        self._pp = pp
+
         self._conn = MySQLdb.connect(host=host, port=port, user=user,
                                      passwd=password, db=db)
         self._conn.autocommit(False)
         self._cursor = self._conn.cursor()
 
         # Find all available nodes to use
-        self._cursor.execute('SELECT nodeId FROM prv_Node')
-        rows = self._cursor.fetchall()
-        nodeIds = list(row[0] for row in rows)
+        nodeIds = self._pp.getNodeIds(self._cursor)
 
         # Split them into two roughly equal groups
         self._nodeIdsA = nodeIds[:len(nodeIds)/2]
@@ -46,7 +53,7 @@ class Orchestration(object):
         self._activeNodeB = 0
 
         # Process exposures in groups. Keep the count.
-        self._groupId = None
+        self._blockId = None
         self._agCount = 0     # count of exposures already processed in that group
         self._maxInGroup = 10 # max count of exposures per group
 
@@ -56,7 +63,7 @@ class Orchestration(object):
         """
         self._conn.close()
 
-    def runDRP(self, pp):
+    def runDRP(self):
         """
         Do the orchestration as described in the class description.
         """
@@ -70,70 +77,61 @@ FROM   ScienceCalibratedExposure''')
             rowN = 0
             for row in rows:
                 (scExpId, theFilter, ra, decl, flux) = row
-                self._addExposureToGroup(scExpId, pp)
-                drpPipe.processExposure(
-                    scExpId, theFilter, ra, decl, flux, pp, self._cursor)
+                self._addExposureToDataBlock(scExpId)
+                drpPipe.processExposure(scExpId, theFilter, ra, decl, flux,
+                                        self._pp, self._cursor)
                 rowN += 1
                 if rowN == 70:
-                    self._insertNewWCSDeterminationAlgorithm(pp)
+                    self._insertNewWCSDeterminationAlgorithm()
             self._conn.commit()
         except MySQLdb.Error as e:
             print 'Problems: ', e[1], 'when executing:', self._cursor._last_executed
             self._conn.rollback()
 
-    def _insertNewWCSDeterminationAlgorithm(self, pp):
+    def _insertNewWCSDeterminationAlgorithm(self):
         # pretend some time passed and now it is mid October of 2021
-        pp.setCurrentTime('2021-10-15 17:42:12')
+        self._pp.setCurrentTime('2021-10-15 17:42:12')
         # update the algorithms a bit, including changing some input parameters
-        pp.updateTaskConfig(self._cursor,
-                            Task('WCS Determination',
-                                 '4355aa',
-                                 {"x":"2.1","y":"5.08","z":"6.7"}))
+        self._pp.updateTaskConfig(self._cursor,
+                                 Task('WCS Determination',
+                                      '4355aa',
+                                      {"x":"2.1","y":"5.08","z":"6.7"}))
         # and of course that means we need to update procHistoryId
-        pp.createProcHistoryId(self._cursor)
+        self._pp.createProcHistoryId(self._cursor)
 
-    def _addExposureToGroup(self, scExpId, pp):
-        if self._groupId:
-            # check if configuration changed, if it did, start a new group
-            if self._procHistoryId != pp.getProcHistoryId(self._cursor):
-                print "configuration changed, resetting group"
-                self._groupId = None
+    def _addExposureToDataBlock(self, scExpId):
+        if self._blockId:
+            # check if configuration changed, if it did, start a new data block
+            if self._procHistoryId != self._pp.getProcHistoryId(self._cursor):
+                print "configuration changed, resetting data block"
+                self._blockId = None
 
-        if self._groupId is None:
-            self._cursor.execute('''
-INSERT INTO prv_SCEGroup(sceGroupId) VALUES (NULL)''')
-            self._groupId = self._cursor.lastrowid
-            # determine next available id for the sceGroupId
-            # FIXME this has concurrency issue
-            #self._cursor.execute('SELECT MAX(sceGroupId) FROM prv_SCEGroup')
-            #row = self._cursor.fetchone()
-            #if row[0] is None:
-            #    self._groupId = 1
-            #else:
-            #    self._groupId = int(row[0]) + 1
+        if self._blockId is None:
+            self._blockId = self._pp.registerDataBlock(self._cursor,
+                                                      "ScienceCalibratedExposure")
+
             # register taskExecutions and bind them with the group of exposures
             # that will be processed by these taskExecutions. Let\'s say the first
             # 3 tasks use nodes from pool A, and the other 3 pool B
             for n in ['Image Correction',
                       'WCS Determination',
                       'Photometric Calibration']:
-                pp.registerTaskExecution(self._cursor, n,
-                    self._nodeIdsA[self._activeNodeA], self._groupId)
+                self._pp.registerTaskExecution(self._cursor, n,
+                    self._nodeIdsA[self._activeNodeA], self._blockId)
             for n in ['Astrometric Calibration',
                       'Image Coaddition',
                       'Classification']:
-                pp.registerTaskExecution(self._cursor, n,
-                    self._nodeIdsB[self._activeNodeB], self._groupId)
+                self._pp.registerTaskExecution(self._cursor, n,
+                    self._nodeIdsB[self._activeNodeB], self._blockId)
             # and capture the current procHistoryId
-            self._procHistoryId = pp.getProcHistoryId(self._cursor)
+            self._procHistoryId = self._pp.getProcHistoryId(self._cursor)
 
         # add current exposure to that group
-        self._cursor.execute('''
-INSERT INTO prv_SCEExposureToGroup(sceGroupId, scExposureId)
-VALUES (%s, %s)''' % (self._groupId, scExpId))
+        self._pp.registerRowIdInBlock(self._cursor, self._blockId, scExpId)
+
         self._agCount += 1
         if self._agCount >= self._maxInGroup:
-            self._groupId = None
+            self._blockId = None
             self._agCount = 0
             self._activeNodeA += 1
             if self._activeNodeA >=len(self._nodeIdsA):
@@ -142,4 +140,4 @@ VALUES (%s, %s)''' % (self._groupId, scExpId))
             if self._activeNodeB >=len(self._nodeIdsB):
                 self._activeNodeB = 0
 
-        pp.forwardCurrentTime(12)
+        self._pp.forwardCurrentTime(12)

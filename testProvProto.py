@@ -69,32 +69,41 @@ def prepareIt():
     pp.createProcHistoryId(cursor)
 
     # and we are working with two pipelines only for now, They consist of some
-    # tasks. We are also keeping track which tables they produce.
+    # tasks. We are also keeping track which tables/columns they produce.
     pp.registerPipeline(
         cursor,
         'Calibration Pipeline',
-        (Task('Calib A', '33226a', {}),
-         Task('Calib B', '75e3f2', {"firstParam": "invalid"})),
-        ('ScienceCalibratedExposure'))
+        (Task('Calib A', '33226a'),
+         Task('Calib B', '75e3f2', {"firstParam": "invalid"},
+              ('RawCalibratedExposure.ra', 'RawCalibratedExposure.decl'))),
+        )
 
     pp.registerPipeline(
         cursor,
         'Data Release Pipeline',
-        (Task('Image Correction', 'adf423', {"x":"1","y":"2","z":"3.3"}),
-         Task('WCS Determination', '3e5567', {"x":"2","y":"4","z":"6.6"}),
-         Task('Photometric Calibration', '55b345', {"x":"3","y":"6","z":"9.9"}),
-         Task('Astrometric Calibration', 'f33443', {"x":"4","y":"8","z":"12.9"}),
-         Task('Image Coaddition', '32116c', {"x":"5","y":"10","z":"14.9"}),
-         Task('Classification', '8900a2', {"x":"6","y":"12","z":"18.4"})),
-        ('Object', 'Source'))
+        (Task('Image Correction', 'adf423',
+              {"x":"1","y":"2","z":"3.3"}),
+         Task('WCS Determination', '3e5567',
+              {"x":"2","y":"4","z":"6.6"}, ('Source.ra', 'Source.decl')),
+         Task('Photometric Calibration', '55b345',
+              {"x":"3","y":"6","z":"9.9"}, ('Source.flux',)),
+         Task('Astrometric Calibration', 'f33443',
+              {"x":"4","y":"8","z":"12.9"}),
+         Task('Image Coaddition', '32116c',
+              {"x":"5","y":"10","z":"14.9"}, ('Object.*',)),
+         Task('Classification', '8900a2',
+              {"x":"6","y":"12","z":"18.4"})))
 
     # Now the hardware, let's pretend we have 6 nodes for processing
-    pp.registerNode(cursor, 'lsst-dbdev3', '34.56.121.6', 'CentOS 6.7', 8, 16)
-    pp.registerNode(cursor, 'lsst-dbdev4', '34.56.121.7', 'CentOS 6.7', 8, 16)
-    pp.registerNode(cursor, 'lsst-dev', '34.56.31.22', 'CentOS 6.7', 32, 128)
-    pp.registerNode(cursor, 'lsst7', '34.56.59.7', 'CentOS 6.7', 8, 32)
-    pp.registerNode(cursor, 'lsst8', '34.56.59.8', 'CentOS 6.7', 8, 32)
-    pp.registerNode(cursor, 'lsst9', '34.56.59.9', 'CentOS 6.7', 8, 32)
+    nodes = [('lsst-dbdev3', '34.56.121.6', 'CentOS 6.7',  8,  16),
+             ('lsst-dbdev4', '34.56.121.7', 'CentOS 6.7',  8,  16),
+             ('lsst-dev',    '34.56.31.22', 'CentOS 6.7', 32, 128),
+             ('lsst7',       '34.56.59.7',  'CentOS 6.7',  8,  32),
+             ('lsst8',       '34.56.59.8',  'CentOS 6.7',  8,  32),
+             ('lsst9',       '34.56.59.9',  'CentOS 6.7',  8,  32)]
+
+    for node in nodes:
+        pp.registerNode(cursor, *node)
 
     cursor.close()
     conn.commit()
@@ -127,8 +136,8 @@ def prepareIt():
     # Then we run DRP. This one is more advanced. We run it through orchestration
     # layer, different tasks are run on different nodes etc. This pipeline produces
     # objects and sources.
-    orch = Orchestration(**mysqlCredentials)
-    orch.runDRP(pp)
+    orch = Orchestration(pp, **mysqlCredentials)
+    orch.runDRP()
 
 # ----------------------------------------------------------------------------------
 
