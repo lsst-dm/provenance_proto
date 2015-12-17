@@ -29,33 +29,22 @@ class ProvProto(object):
     def createProcHistoryId(self, cursor):
         '''
         Creates a new procHistoryId.
+
+        @param cursor  Open, valid database cursor
         '''
         cursor.execute('INSERT INTO prv_ProcHistory(procHistoryId) VALUES (NULL)')
 
     def getProcHistoryId(self, cursor):
         '''
+        @param cursor  Open, valid database cursor
+
         Returns current procHistoryId.
         '''
         cursor.execute('SELECT MAX(procHistoryId) FROM prv_ProcHistory')
         row = cursor.fetchone()
         return row[0]
 
-    def setCurrentTime(self, t):
-        '''
-        Sets current time to the value passed through t in a form
-        'YYYY-MM-DD HH:MM:SS'.
-        '''
-        self._currentTime = t
-
-    def forwardCurrentTime(self, nSeconds):
-        '''
-        Adds specified number of seconds to current time.
-        '''
-        theTime = datetime.strptime(self._currentTime, '%Y-%m-%d %H:%M:%S')
-        theTime += timedelta(seconds=nSeconds)
-        self._currentTime = theTime.strftime('%Y-%m-%d %H:%M:%S')
-
-    def registerPipeline(self, cursor, name, tasks, tables):
+    def registerPipeline(self, cursor, name, tasks):
         '''
         Registers the pipeline and corresponding configuration in provenance.
         Registers the tasks if they are not registered and attaches them to the
@@ -64,7 +53,6 @@ class ProvProto(object):
         @param name    name of the pipeline
         @param tasks   list of task object representing tasks that the pipeline
                        consists of. Order matters
-        @param tables  list of tables that the pipeline produces
         '''
         # register pipeline in prv_Pipeline
         cursor.execute('''
@@ -91,37 +79,56 @@ class ProvProto(object):
                 cursor.execute('''
                     INSERT INTO prv_Task(taskName) VALUES (%s)''', (task.name,))
                 taskId = cursor.lastrowid
+            cursor.execute('''
+                INSERT INTO prv_cnf_Task(taskId, validityBegin, validityEnd,
+                gitSHA) VALUES (%s, %s, %s, %s)''',
+                (taskId, self._currentTime, self._infinity, task.gitSHA))
+            taskCnfId = cursor.lastrowid
+            for k in task.paramKVDict:
                 cursor.execute('''
-                    INSERT INTO prv_cnf_Task(taskId, validityBegin, validityEnd,
-                    gitSHA) VALUES (%s, %s, %s, %s)''',
-                    (taskId, self._currentTime, self._infinity, task.gitSHA))
-                taskCnfId = cursor.lastrowid
-                for k in task.paramKVDict:
-                    cursor.execute('''
-                        INSERT INTO prv_cnf_Task_KVParams(taskCnfId, theKey,
-                        theValue) VALUES (%s, %s, %s)''',
-                        (taskCnfId, k, task.paramKVDict[k]))
+                    INSERT INTO prv_cnf_Task_KVParams(taskCnfId, theKey,
+                    theValue) VALUES (%s, %s, %s)''',
+                    (taskCnfId, k, task.paramKVDict[k]))
+            for c in task.tCols:
+                cursor.execute('''
+                    INSERT INTO prv_cnf_Task_Columns(taskCnfId, tcName)
+                    VALUES (%s, %s)''', (taskCnfId, c))
             cursor.execute('''
                 INSERT INTO prv_cnf_Pipeline_Tasks(pipelineCnfId, taskId,
                 taskPosition) VALUES (%s, %s, %s)''',
                 (pipeCnfId, taskId, taskPos))
             taskPos += 1
 
-        # register tables pipeline produces
-        for table in tables:
-            cursor.execute('''
-                INSERT INTO prv_TableToPipeline(tableName, pipelineId)
-                VALUES (%s, %s)''', (table, pipeId))
-            tToPId = cursor.lastrowid
-            cursor.execute('''
-                INSERT INTO prv_cnf_TableToPipeline(tableToPipelineId,
-                validityBegin, validityEnd) VALUES (%s, %s, %s)''',
-                (tToPId, self._currentTime, self._infinity))
+    def registerDataBlock(self, cursor, tableName):
+        '''
+        Registers a new data block entry in provenance.
+
+        @param cursor     Open, valid database cursor
+        @param tableName  Table name that corresponds to the block being created.
+
+        Returns the id of the newly registered block.
+        '''
+        cursor.execute('''
+INSERT INTO prv_DataBlock(tableName) VALUES ("%s")''' % tableName)
+        return cursor.lastrowid
+
+    def registerRowIdInBlock(self, cursor, blockId, theId):
+        '''
+        Registers a new rowId in a data block identified by blockId.
+
+        @param cursor  Open, valid database cursor
+        @param blockId Data block id
+        @param theId   Row id to be associated with a given block
+        '''
+        cursor.execute('''
+INSERT INTO prv_RowIdToDataBlock(blockId, theId)
+VALUES (%s, %s)''' % (blockId, theId))
 
     def registerNode(self, cursor, name, ip, os, cores, ram):
         '''
         Registers processing node in provenance.
 
+        @param cursor  Open, valid database cursor
         @param name    Node name
         @param ip      IP address of the node
         @param os      OS name and version
@@ -137,8 +144,12 @@ class ProvProto(object):
 
     def updateTaskConfig(self, cursor, task):
         '''
-        Finds the configuration for a given task.
+        Updates the configuration for a given task and updates its validity time:
+        sets validity end for the existing configuration object to "now", and
+        creates a new configuration with validity "now-->infinity", using values
+        passed via task parameter.
 
+        @param cursor     Open, valid database cursor
         @param task       Task object. The names should point to an existing task
                           The values provided will be used as the new values.
         '''
@@ -161,14 +172,14 @@ class ProvProto(object):
                 INSERT INTO prv_cnf_Task_KVParams(taskCnfId, theKey, theValue)
                 VALUES (%s, %s, %s)''', (taskCnfId, k, task.paramKVDict[k]))
 
-    def registerTaskExecution(self, cursor, taskName, nodeId, sceGroupId):
+    def registerTaskExecution(self, cursor, taskName, nodeId, blockId):
         '''
         Registers a new task execution in provenance.
 
-        @param cursor     Open database cursor
+        @param cursor     Open, valid database cursor
         @param taskName   Name of task to register
         @param nodeId     Id of the node where given task runs.
-        @param sceGroupId sceGroupId processed by this taskExecution
+        @param blockId    Id of data block processed by this taskExecution
         '''
         cursor.execute('SELECT taskId FROM prv_Task WHERE taskName=%s', (taskName,))
         row = cursor.fetchone()
@@ -181,5 +192,34 @@ class ProvProto(object):
             VALUES (%s, %s, %s)''', (taskId, nodeId, self._currentTime))
         taskExecId = cursor.lastrowid
         cursor.execute('''
-            INSERT INTO prv_TaskExecutionToSCEGroup(taskExecId, sceGroupId)
-            VALUES (%s, %s)''', (taskExecId, sceGroupId))
+            INSERT INTO prv_TaskExecutionToInputDataBlock(taskExecId, blockId)
+            VALUES (%s, %s)''', (taskExecId, blockId))
+
+    def getNodeIds(self, cursor):
+        '''
+        Returns a list of all nodeIds registered in provenance.
+
+        @param cursor     Open, valid database cursor
+        '''
+        cursor.execute('SELECT nodeId FROM prv_Node')
+        rows = cursor.fetchall()
+        return list(row[0] for row in rows)
+
+    # ------------------------------------------------------------------------------
+    # -----       functions below are relately purely to this prototype        -----
+    # ------------------------------------------------------------------------------
+
+    def setCurrentTime(self, t):
+        '''
+        Sets current time to the value passed through t in a form
+        'YYYY-MM-DD HH:MM:SS'.
+        '''
+        self._currentTime = t
+
+    def forwardCurrentTime(self, nSeconds):
+        '''
+        Adds specified number of seconds to current time.
+        '''
+        theTime = datetime.strptime(self._currentTime, '%Y-%m-%d %H:%M:%S')
+        theTime += timedelta(seconds=nSeconds)
+        self._currentTime = theTime.strftime('%Y-%m-%d %H:%M:%S')

@@ -33,11 +33,11 @@ class ProvDetective(object):
 
         # find all exposures that have sources corresponding to this object
         self._cursor.execute('''
-SELECT scExposureId, sourceId, sceGroupId, taskExecId, taskName, nodeName
+SELECT scExposureId, sourceId, blockId, taskExecId, taskName, nodeName
 FROM   Source
-JOIN   ScienceCalibratedExposure USING(scExposureId)
-JOIN   prv_SCEExposureToGroup USING(scExposureId)
-JOIN   prv_TaskExecutionToSCEGroup USING(sceGroupId)
+JOIN   ScienceCalibratedExposure sce USING(scExposureId)
+JOIN   prv_RowIdToDataBlock r ON sce.scExposureId=r.theId
+JOIN   prv_TaskExecutionToInputDataBlock USING(blockId)
 JOIN   prv_TaskExecution USING(taskExecId)
 JOIN   prv_Node USING(nodeId)
 JOIN   prv_Task USING(taskId)
@@ -75,11 +75,11 @@ WHERE  objectId='%s' ''' % objectId)
 
         # first get the time when given source was processed
         self._cursor.execute('''
-SELECT theTime, sceGroupId
+SELECT theTime, blockId
 FROM   Source
-JOIN   ScienceCalibratedExposure USING(scExposureId)
-JOIN   prv_SCEExposureToGroup USING(scExposureId)
-JOIN   prv_TaskExecutionToSCEGroup USING(sceGroupId)
+JOIN   ScienceCalibratedExposure sce USING(scExposureId)
+JOIN   prv_RowIdToDataBlock r ON sce.scExposureId=r.theId
+JOIN   prv_TaskExecutionToInputDataBlock USING(blockId)
 JOIN   prv_TaskExecution USING(taskExecId)
 WHERE  sourceId=%s''' % sourceId)
         row = self._cursor.fetchone()
