@@ -59,7 +59,7 @@ Current prototype contains structures for keeping information about users, group
 As said earlier, provenance information is kept close to the data. Provenance structure highly depends on the origin of data, as well as the type of repository. From the perspective of data origin, repositories can be divided into four distinct groups.
 
 1. Produced by the LSST camera. An example of such repository is a set of RawExposures
-2. Produced by LSST pipeline. Examples of such repositories: a set of L1 DifferenceExposures, a 2 Data Release catalog, or a L3 user data set generated using an LSST pipeline (possibly with custom algorithms)
+2. Produced by LSST pipeline. Examples of such repositories: a set of L1 DifferenceExposures, a L2 Data Release catalog, or a L3 user data set generated using an LSST pipeline (possibly with custom algorithms)
 3. Produced by custom L3 user software
 4. Brought from outside. The data in these repositories will vary widely, ranging from a large catalog brought from other survey, to tiny user data
 
