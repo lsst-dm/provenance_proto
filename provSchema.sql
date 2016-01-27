@@ -45,10 +45,15 @@ CREATE TABLE prv_Task (
 
 CREATE TABLE prv_cnf_Pipeline_Tasks (
     -- This is a helper table for prv_cnf_Pipeline, it defines what tasks a given
-    -- configuration of a pipeline consists of, and what the order is. Positions
-    -- should be numbered starting with 1.
+    -- configuration of a pipeline consists of, and what the order is. If tasks are
+    -- arranged hierarchically, parentTaskId determines which parent task given
+    -- task belongs to. For tasks that do not have a parent task, parentTaskId is
+    -- set to NULL.
+    -- Positions should be numbered starting with 1, and are relative to its parent
+    -- task.
     pipelineCnfId INT NOT NULL,
     taskId INT NOT NULL,
+    parentTaskId INT DEFAULT NULL,
     taskPosition INT NOT NULL,
     INDEX IDX_pipelineCnfId(pipelineCnfId),
     INDEX IDX_taskId(taskId),
@@ -65,12 +70,18 @@ CREATE TABLE prv_cnf_Task (
     taskId INT,
     validityBegin DATETIME NOT NULL,
     validityEnd DATETIME NOT NULL,
+    -- Occasionally manual patching will be required, leading to more than one
+    -- configuration (the default one, and the patch). The taskCnfVersion allows
+    -- to have more than one config task with overlapping validity range for a
+    -- given task.
+    taskCnfVersion INT NOT NULL DEFAULT 1,
      -- need to capture version of the software used by this task. For this
      -- proof-of-concept prototype I am assuming it is just one SHA of one commit in
      -- git. This can be more complicated, it can span multiple repos etc.
     gitSHA VARCHAR(256),
     PRIMARY KEY PK_cnfTask_prvCnfTaskId(taskCnfId),
     INDEX IDX_cnfTask_taskId(taskId),
+    INDEX IDX_cnfTask_cnfVer(taskCnfVersion),
     CONSTRAINT FK_cnfTask_taskId
         FOREIGN KEY(taskId)
         REFERENCES prv_Task(taskId)
@@ -159,21 +170,33 @@ CREATE TABLE prv_TaskExecution (
     -- This table keeps information about all tasks ever executed. Since the
     -- configuration of the system is not allowed to change while a tasks is
     -- running, we are not keeping a time range here, but instead we just keep
-    -- the time of when the task started. This is one of the most important parts
+    -- the time of when the task started. It might be a good idea to keep the
+    -- time of the middle of task execution: endTime-startTime/2 to reduce changes
+    -- of running into an issue with time synchronization between different
+    -- machines.
+    -- This table is one of the most important parts
     -- of provenance - it links tasks executions with nodes and processed groups.
+    -- Occasionally manual patching will be required, which will lead to more than
+    -- one valid configuration of a given task. TaskCnfVersion indicates which
+    -- version should be used for a given task execution.
     taskExecId BIGINT NOT NULL AUTO_INCREMENT,
     taskId INT NOT NULL,
     nodeId INT NOT NULL,
     theTime DATETIME NOT NULL,
+    taskCnfVersion INT NOT NULL DEFAULT 1,
     PRIMARY KEY PK_taskExec_taskExecId(taskExecId),
     INDEX IDX_taskExec_taskId(taskId),
     INDEX IDX_taskExec_nodeId(nodeId),
+    INDEX IDX_taskExec_cnfVer(taskCnfVersion),
     CONSTRAINT FK_taskExec_taskId
         FOREIGN KEY(taskId)
         REFERENCES prv_Task(taskId),
     CONSTRAINT FK_taskExec_nodeId
         FOREIGN KEY(nodeId)
-        REFERENCES prv_Node(nodeId)
+        REFERENCES prv_Node(nodeId),
+    CONSTRAINT FK_taskExec_cnfVersion
+        FOREIGN KEY(taskCnfVersion)
+        REFERENCES prv_cnf_Task(taskCnfVersion)
 ) ENGINE=InnoDB;
 
 CREATE TABLE prv_TaskExecutionToInputDataBlock (
